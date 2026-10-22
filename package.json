@@ -1,0 +1,9 @@
+{
+  "name": "jack-universe",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm run start:dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "test:backend": "npm test --prefix backend"
+  }
+}
