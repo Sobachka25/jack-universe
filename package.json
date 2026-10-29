@@ -5,6 +5,12 @@
     "dev": "node scripts/dev.mjs",
     "dev:backend": "npm run start:dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",
-    "test:backend": "npm test --prefix backend"
+    "test:backend": "npm test --prefix backend",
+    "release": "node scripts/release.mjs"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.24.0",
+    "esbuild": "^0.28.2",
+    "tar": "^7.5.22"
   }
 }

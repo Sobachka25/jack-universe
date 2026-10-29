@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
+import { voiceRoots } from './paths';
 
 const cache = new Map<string, number>();
 
@@ -69,10 +70,7 @@ export function voiceDurationMs(folder: string, file: string): number {
   const key = `${folder}/${file}`;
   const known = cache.get(key);
   if (known !== undefined) return known;
-  const roots = [
-    resolve(process.cwd(), 'frontend', 'public', 'voice'),
-    resolve(process.cwd(), '..', 'frontend', 'public', 'voice'),
-  ];
+  const roots = voiceRoots();
   let ms = 0;
   for (const root of roots) {
     const path = resolve(root, folder, file);

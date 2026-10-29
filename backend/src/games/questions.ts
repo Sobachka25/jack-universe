@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { inflateRawSync } from 'zlib';
 import { RoomError } from '../rooms/room.model';
+import { appRoots } from '../paths';
 
 export interface QuizQuestion {
   prompt: string;
@@ -35,10 +36,7 @@ export function loadQuizQuestions(): QuizQuestion[] {
 }
 
 function questionsFile(): string {
-  const candidates = [
-    resolve(process.cwd(), 'вопросы.xlsx'),
-    resolve(process.cwd(), '..', 'вопросы.xlsx'),
-  ];
+  const candidates = appRoots().map((root) => resolve(root, 'вопросы.xlsx'));
   const found = candidates.find((path) => existsSync(path));
   if (!found) throw new RoomError('Файл с вопросами не найден');
   return found;

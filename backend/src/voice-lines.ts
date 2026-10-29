@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from 'fs';
 import { resolve } from 'path';
+import { voiceRoots } from './paths';
 
 export const VOICE_CATEGORIES = ['intro', 'countdown', 'answer', 'other'] as const;
 export type VoiceCategory = (typeof VOICE_CATEGORIES)[number];
@@ -19,9 +20,5 @@ export function voiceLines(root = voiceRoot()): Record<VoiceCategory, string[]> 
 }
 
 function voiceRoot(): string | null {
-  const candidates = [
-    resolve(process.cwd(), 'frontend', 'public', 'voice'),
-    resolve(process.cwd(), '..', 'frontend', 'public', 'voice'),
-  ];
-  return candidates.find((path) => existsSync(path)) ?? null;
+  return voiceRoots()[0] ?? null;
 }
