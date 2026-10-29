@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import { GAME_MENU } from '../gameMenu'
 import type { ActivitySnapshot, GameId, GameInput, HauntView } from '../types'
+import { PlayerAvatar } from './PlayerAvatar'
 
 export function GameMenu({
   busy,
@@ -37,37 +38,46 @@ export function GameMenu({
 
 export function PartyScreen({
   activity,
-  busy,
+  busy = false,
   onStart,
   onStop,
+  bare = false,
+  paused = false,
 }: {
   activity: ActivitySnapshot
-  busy: boolean
-  onStart: () => void
-  onStop: () => void
+  busy?: boolean
+  onStart?: () => void
+  onStop?: () => void
+  bare?: boolean
+  paused?: boolean
 }) {
+  const quiet = bare && activity.status === 'play'
   return (
     <section className="party">
-      <HostLine lineId={activity.line.id} text={activity.line.text} />
-      <div className="party-head">
-        <div>
-          <p className="eyebrow">{statusLabel(activity.status)}</p>
-          <h1 className="menu-title">{activity.title}</h1>
+      {bare ? null : <HostLine lineId={activity.line.id} text={activity.line.text} />}
+      {quiet ? null : (
+        <div className="party-head">
+          <div>
+            <p className="eyebrow">{statusLabel(activity.status)}</p>
+            <h1 className="menu-title">{activity.title}</h1>
+          </div>
+          {bare ? null : (
+            <div className="room-actions">
+              {activity.status === 'briefing' ? (
+                <button className="btn btn-primary" type="button" disabled={busy} onClick={onStart}>
+                  Запустить
+                </button>
+              ) : null}
+              <button className="btn btn-ghost" type="button" disabled={busy} onClick={onStop}>
+                {activity.status === 'result' ? 'К выбору игр' : 'Закрыть раунд'}
+              </button>
+            </div>
+          )}
         </div>
-        <div className="room-actions">
-          {activity.status === 'briefing' ? (
-            <button className="btn btn-primary" type="button" disabled={busy} onClick={onStart}>
-              Запустить
-            </button>
-          ) : null}
-          <button className="btn btn-ghost" type="button" disabled={busy} onClick={onStop}>
-            {activity.status === 'result' ? 'К выбору игр' : 'Закрыть раунд'}
-          </button>
-        </div>
-      </div>
+      )}
       {activity.status === 'briefing' ? <p className="lede">{activity.blurb}</p> : null}
-      {activity.status === 'play' ? <HauntNotes haunts={activity.haunts} /> : null}
-      {activity.status === 'play' ? <PlayStage activity={activity} /> : null}
+      {activity.status === 'play' && !quiet ? <HauntNotes haunts={activity.haunts} /> : null}
+      {activity.status === 'play' ? <PlayStage activity={activity} paused={paused} /> : null}
       {activity.status === 'result' ? (
         <HhList names={activity.sentToHh.map((player) => player.name)} />
       ) : null}
@@ -81,28 +91,41 @@ export function PartyPhone({
   onHh,
   targets,
   onInput,
+  paused = false,
+  bare = false,
 }: {
   activity: ActivitySnapshot
   playerId: string
   onHh: boolean
   targets: { id: string; name: string }[]
   onInput: (input: GameInput) => void
+  paused?: boolean
+  bare?: boolean
 }) {
   const sent = activity.status === 'result' && activity.sentToHh.some((player) => player.playerId === playerId)
   const ghost = onHh || sent
+  const quiet = bare && activity.status === 'play'
 
   return (
-    <section className="panel player-card">
-      <HostLine lineId={activity.line.id} text={activity.line.text} />
-      <p className="eyebrow">{activity.title}</p>
+    <section className={quiet ? 'play-phone' : 'panel player-card'}>
+      {paused && quiet ? <p className="pause-banner">Пауза</p> : null}
+      {quiet ? null : <HostLine lineId={activity.line.id} text={activity.line.text} />}
+      {quiet ? null : <p className="eyebrow">{activity.title}</p>}
       {activity.status === 'briefing' ? (
         <h1 className="menu-title">{ghost ? 'С hh подложишь в раунде' : 'Николай ещё не запустил раунд'}</h1>
       ) : null}
       {activity.status === 'play' && ghost ? (
-        <HauntPad activity={activity} playerId={playerId} targets={targets} onInput={onInput} />
+        <HauntPad
+          activity={activity}
+          playerId={playerId}
+          targets={targets}
+          paused={paused}
+          quiet={quiet}
+          onInput={onInput}
+        />
       ) : null}
       {activity.status === 'play' && !ghost ? (
-        <PhonePlay activity={activity} playerId={playerId} onInput={onInput} />
+        <PhonePlay activity={activity} playerId={playerId} paused={paused} quiet={quiet} onInput={onInput} />
       ) : null}
       {activity.status === 'result' ? (
         <h1 className="menu-title">{ghost ? 'Ты на hh' : 'Ты ещё в штате'}</h1>
@@ -137,18 +160,22 @@ function HauntPad({
   activity,
   playerId,
   targets,
+  paused,
+  quiet = false,
   onInput,
 }: {
   activity: Extract<ActivitySnapshot, { status: 'play' }>
   playerId: string
   targets: { id: string; name: string }[]
+  paused: boolean
+  quiet?: boolean
   onInput: (input: GameInput) => void
 }) {
   const done = activity.haunts.some((haunt) => haunt.ghostId === playerId)
   return (
     <div className="play-block">
-      <p className="lede">Ты на hh. Один раз за раунд можно подложить кому-то в штате.</p>
-      <HauntNotes haunts={activity.haunts} />
+      {quiet ? null : <p className="lede">Ты на hh. Один раз за раунд можно подложить кому-то в штате.</p>}
+      {quiet ? null : <HauntNotes haunts={activity.haunts} />}
       {targets.length === 0 ? <p className="lede">В штате уже никого.</p> : null}
       <div className="option-grid">
         {targets.map((target) => {
@@ -158,7 +185,7 @@ function HauntPad({
               key={target.id}
               type="button"
               className="btn btn-ghost"
-              disabled={done || taken}
+              disabled={paused || done || taken}
               onClick={() => onInput({ hauntTargetId: target.id })}
             >
               {hauntLabel(activity.gameId)}: {target.name}
@@ -176,10 +203,17 @@ function hauntLabel(gameId: GameId) {
   if (gameId === 'night-pager') return 'Расширить зону'
   if (gameId === 'red-button') return 'Заклеить кнопку'
   if (gameId === 'alert-repeat') return 'Подменить алерт'
+  if (gameId === 'code-review') return 'Подменить вариант'
   return 'Подложить'
 }
 
-function PlayStage({ activity }: { activity: Extract<ActivitySnapshot, { status: 'play' }> }) {
+function PlayStage({
+  activity,
+  paused,
+}: {
+  activity: Extract<ActivitySnapshot, { status: 'play' }>
+  paused: boolean
+}) {
   if (activity.gameId === 'server-balance') {
     const left = Math.max(0, Math.ceil((activity.endsAt - activity.serverNow) / 1000))
     return (
@@ -190,6 +224,7 @@ function PlayStage({ activity }: { activity: Extract<ActivitySnapshot, { status:
         <ul className="rack-list">
           {activity.racks.map((rack) => (
             <li key={rack.playerId}>
+              <PlayerAvatar id={rack.playerId} size={40} />
               <div
                 className={rack.heavy ? 'mini-rack heavy' : 'mini-rack'}
                 style={{ transform: `rotate(${rack.angle}deg)` }}
@@ -206,7 +241,7 @@ function PlayStage({ activity }: { activity: Extract<ActivitySnapshot, { status:
   if (activity.gameId === 'friday-release') {
     return (
       <div className="play-block">
-        <ReleaseTrack activity={activity} />
+        <ReleaseTrack activity={activity} paused={paused} />
         <p className="count">Нажали {activity.tapped.length}</p>
       </div>
     )
@@ -225,6 +260,20 @@ function PlayStage({ activity }: { activity: Extract<ActivitySnapshot, { status:
       </div>
     )
   }
+  if (activity.gameId === 'code-review') {
+    return (
+      <div className="play-block">
+        <p className="count">{secondsLeft(activity.endsAt, activity.serverNow)} с</p>
+        <div className="option-grid">
+          {activity.options.map((option, index) => (
+            <p key={index} className="option-card">
+              {option}
+            </p>
+          ))}
+        </div>
+      </div>
+    )
+  }
   if (activity.gameId === 'alert-repeat') {
     return (
       <div className="play-block">
@@ -235,26 +284,24 @@ function PlayStage({ activity }: { activity: Extract<ActivitySnapshot, { status:
               <li key={`${icon}-${index}`}>{icon}</li>
             ))}
           </ol>
-        ) : (
-          <p className="lede">Алерты погасли. Порядок набирают на телефонах.</p>
-        )}
+        ) : null}
       </div>
     )
   }
-  return (
-    <p className="count">
-      Минуту ставят на телефонах · {secondsLeft(activity.endsAt, activity.serverNow)} с
-    </p>
-  )
+  return <p className="count">{secondsLeft(activity.endsAt, activity.serverNow)} с</p>
 }
 
 function PhonePlay({
   activity,
   playerId,
+  paused,
+  quiet = false,
   onInput,
 }: {
   activity: Extract<ActivitySnapshot, { status: 'play' }>
   playerId: string
+  paused: boolean
+  quiet?: boolean
   onInput: (input: GameInput) => void
 }) {
   if (activity.gameId === 'server-balance') {
@@ -266,6 +313,8 @@ function PhonePlay({
         score={rack.score}
         alive={rack.alive}
         heavy={rack.heavy}
+        paused={paused}
+        quiet={quiet}
         onInput={onInput}
       />
     )
@@ -274,8 +323,8 @@ function PhonePlay({
     const tapped = activity.tapped.includes(playerId)
     return (
       <div className="play-block">
-        <ReleaseTrack activity={activity} />
-        <button className="btn btn-primary" type="button" disabled={tapped} onClick={() => onInput({})}>
+        <ReleaseTrack activity={activity} paused={paused} />
+        <button className="btn btn-primary" type="button" disabled={paused || tapped} onClick={() => onInput({})}>
           {tapped ? 'Релиз ушёл' : 'Выкатить'}
         </button>
       </div>
@@ -284,10 +333,29 @@ function PhonePlay({
   if (activity.gameId === 'night-pager') {
     return (
       <PagerPad
-        locked={activity.locked.includes(playerId)}
+        locked={paused || activity.locked.includes(playerId)}
         wide={activity.wideZone}
+        quiet={quiet}
         onInput={onInput}
       />
+    )
+  }
+  if (activity.gameId === 'code-review') {
+    const locked = activity.locked.includes(playerId)
+    return (
+      <div className="option-grid">
+        {activity.options.map((option, index) => (
+          <button
+            key={index}
+            className="btn btn-ghost"
+            type="button"
+            disabled={paused || locked}
+            onClick={() => onInput({ choice: index })}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
     )
   }
   if (activity.gameId === 'red-button') {
@@ -301,7 +369,7 @@ function PhonePlay({
               key={option}
               className="btn btn-ghost"
               type="button"
-              disabled={locked || sealed}
+              disabled={paused || locked || sealed}
               onClick={() => onInput({ choice: index })}
             >
               {sealed ? `${option} · заклеено` : option}
@@ -315,7 +383,8 @@ function PhonePlay({
     <AlertPad
       key={`${activity.revealUntil}-${activity.sequence.join('|')}`}
       activity={activity}
-      locked={activity.locked.includes(playerId)}
+      locked={paused || activity.locked.includes(playerId)}
+      quiet={quiet}
       onInput={onInput}
     />
   )
@@ -326,12 +395,16 @@ function BalancePad({
   score,
   alive,
   heavy,
+  paused,
+  quiet = false,
   onInput,
 }: {
   angle: number
   score: number
   alive: boolean
   heavy: boolean
+  paused: boolean
+  quiet?: boolean
   onInput: (input: GameInput) => void
 }) {
   function down(event: PointerEvent<HTMLButtonElement>, hold: 'left' | 'right') {
@@ -354,14 +427,16 @@ function BalancePad({
           <i />
         </div>
       </div>
-      <p className="count">
-        {alive ? `${score} очков${heavy ? ' · гиря' : ''}` : 'Сервер лег. Николай уже открыл hh.'}
-      </p>
+      {quiet ? null : (
+        <p className="count">
+          {alive ? `${score} очков${heavy ? ' · гиря' : ''}` : 'Сервер лег. Николай уже открыл hh.'}
+        </p>
+      )}
       <div className="hold-row">
-        <button type="button" disabled={!alive} onPointerDown={(event) => down(event, 'left')} onPointerUp={up} onPointerCancel={up}>
+        <button type="button" disabled={paused || !alive} onPointerDown={(event) => down(event, 'left')} onPointerUp={up} onPointerCancel={up}>
           Влево
         </button>
-        <button type="button" disabled={!alive} onPointerDown={(event) => down(event, 'right')} onPointerUp={up} onPointerCancel={up}>
+        <button type="button" disabled={paused || !alive} onPointerDown={(event) => down(event, 'right')} onPointerUp={up} onPointerCancel={up}>
           Вправо
         </button>
       </div>
@@ -371,10 +446,12 @@ function BalancePad({
 
 function ReleaseTrack({
   activity,
+  paused,
 }: {
   activity: Extract<ActivitySnapshot, { status: 'play'; gameId: 'friday-release' }>
+  paused: boolean
 }) {
-  const now = useSyncedNow(activity.serverNow)
+  const now = useSyncedNow(activity.serverNow, paused)
   const elapsed = Math.max(0, now - activity.startedAt)
   const pos = (elapsed % activity.periodMs) / activity.periodMs
   const greenLeft = (activity.greenCenter - activity.greenHalf) * 100
@@ -391,16 +468,18 @@ function ReleaseTrack({
 function PagerPad({
   locked,
   wide,
+  quiet = false,
   onInput,
 }: {
   locked: boolean
   wide: boolean
+  quiet?: boolean
   onInput: (input: GameInput) => void
 }) {
   const [minute, setMinute] = useState(30)
   return (
     <div className="play-block">
-      {wide ? <p className="lede">Мёртвая зона для тебя шире.</p> : null}
+      {wide && !quiet ? <p className="lede">Мёртвая зона для тебя шире.</p> : null}
       <p className="menu-title minute">{minute}</p>
       <input
         type="range"
@@ -420,10 +499,12 @@ function PagerPad({
 function AlertPad({
   activity,
   locked,
+  quiet = false,
   onInput,
 }: {
   activity: Extract<ActivitySnapshot, { status: 'play'; gameId: 'alert-repeat' }>
   locked: boolean
+  quiet?: boolean
   onInput: (input: GameInput) => void
 }) {
   const [picked, setPicked] = useState<string[]>([])
@@ -438,15 +519,19 @@ function AlertPad({
   }
   return (
     <div className="play-block">
-      <p className="count">{picked.join(' → ') || 'Набери порядок'}</p>
+      {quiet ? (
+        picked.length > 0 ? <p className="count">{picked.join(' → ')}</p> : null
+      ) : (
+        <p className="count">{picked.join(' → ') || 'Набери порядок'}</p>
+      )}
       <div className="option-grid">
         {activity.icons.map((icon) => (
           <button
             key={icon}
             type="button"
             className="btn btn-ghost"
-            disabled={locked || picked.length >= 4}
-            onClick={() => setPicked((current) => [...current, icon].slice(0, 4))}
+            disabled={locked || picked.length >= ALERT_LENGTH}
+            onClick={() => setPicked((current) => [...current, icon].slice(0, ALERT_LENGTH))}
           >
             {icon}
           </button>
@@ -455,7 +540,7 @@ function AlertPad({
       <button
         className="btn btn-primary"
         type="button"
-        disabled={locked || picked.length !== 4}
+        disabled={locked || picked.length !== ALERT_LENGTH}
         onClick={() => onInput({ sequence: picked })}
       >
         {locked ? 'Порядок принят' : 'Отправить'}
@@ -463,6 +548,8 @@ function AlertPad({
     </div>
   )
 }
+
+const ALERT_LENGTH = 8
 
 function HhList({ names }: { names: string[] }) {
   if (names.length === 0) return <p className="lede">Николай никого не тронул.</p>
@@ -494,7 +581,7 @@ function secondsLeft(endsAt: number, serverNow: number) {
   return Math.max(0, Math.ceil((endsAt - serverNow) / 1000))
 }
 
-function useSyncedNow(serverNow: number) {
+function useSyncedNow(serverNow: number, paused = false) {
   const skew = useRef(0)
   const [now, setNow] = useState(serverNow)
   useEffect(() => {
@@ -509,5 +596,5 @@ function useSyncedNow(serverNow: number) {
     frame = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(frame)
   }, [])
-  return now
+  return paused ? serverNow : now
 }

@@ -1,8 +1,39 @@
-import { PartyRound } from './party-round';
+import * as catalog from './catalog';
+import { ALERT_LENGTH, PartyRound } from './party-round';
+import { loadQuizQuestions } from './questions';
 
 describe('PartyRound', () => {
-  it('keeps the question round closed while questions are still being written', () => {
-    expect(() => PartyRound.briefing('code-review')).toThrow(/готов/);
+  it('asks a sheet question and sends the wrong answer to hh', () => {
+    const questions = loadQuizQuestions();
+    expect(questions).toHaveLength(23);
+    expect(questions[0]?.correct).toBe('«ВОДЫЫЫЫ»');
+
+    const card = catalog.gameCard('code-review');
+    expect(card?.ready).toBe(false);
+    const spy = jest
+      .spyOn(catalog, 'gameCard')
+      .mockReturnValue(card && { ...card, ready: true });
+    const round = PartyRound.briefing('code-review', () => 0, [
+      {
+        prompt: 'Где печеньки?',
+        correct: 'В шкафу',
+        wrong: ['В чате', 'В трекере', 'В проде'],
+      },
+    ]);
+    spy.mockRestore();
+    round.start(0, [
+      { id: 'a', name: 'Аня' },
+      { id: 'b', name: 'Боря' },
+    ]);
+    round.input('a', { choice: 0 }, 10);
+    round.input('b', { choice: 3 }, 20);
+    round.tick(12_000);
+
+    const done = round.snapshot(12_000);
+    expect(done.status).toBe('result');
+    if (done.status !== 'result') return;
+    expect(done.sentToHh.map((player) => player.name)).toEqual(['Аня']);
+    expect(done.line.text).toContain('В шкафу');
   });
 
   it('sends a player who drops the server to hh', () => {
@@ -97,12 +128,11 @@ describe('PartyRound', () => {
     round.input('g', { hauntTargetId: 'a' }, 10);
     const at = Math.round(0.57 * 2_200);
     round.input('a', {}, at);
-    round.input('b', {}, at);
     expect(round.snapshot(at, 'a')).toMatchObject({ greenHalf: 0.05 });
     expect(round.snapshot(at, null)).toMatchObject({ greenHalf: 0.1 });
-    round.tick(12_000);
+    round.input('b', {}, at);
 
-    const done = round.snapshot(12_000);
+    const done = round.snapshot(at);
     expect(done.status).toBe('result');
     if (done.status !== 'result') return;
     expect(done.sentToHh.map((player) => player.name)).toEqual(['Аня']);
@@ -123,6 +153,8 @@ describe('PartyRound', () => {
     const screen = alerts.snapshot(1, null);
     if (victim.status !== 'play' || victim.gameId !== 'alert-repeat') return;
     if (screen.status !== 'play' || screen.gameId !== 'alert-repeat') return;
+    expect(screen.sequence).toHaveLength(ALERT_LENGTH);
+    expect(screen.revealUntil).toBe(ALERT_LENGTH * 1_000);
     expect(screen.sequence[0]).toBe('CPU');
     expect(victim.sequence[0]).toBe('Диск');
     expect(() => alerts.input('g', { hauntTargetId: 'a' }, 1)).toThrow(
@@ -145,13 +177,29 @@ describe('PartyRound', () => {
     ]);
     round.input('a', { choice: 1 }, 100);
     round.input('b', { choice: 1 }, 400);
-    round.tick(12_000);
 
-    const done = round.snapshot(12_000);
+    const done = round.snapshot(400);
     expect(done.status).toBe('result');
     if (done.status !== 'result') return;
     expect(done.line.id).toBe('round.all-clear');
     expect(done.sentToHh.map((player) => player.name)).toEqual(['Боря']);
     expect(done.line.text).toContain('Ух какие все молодцы');
+  });
+
+  it('keeps everyone who survives a punishment', () => {
+    const round = PartyRound.briefing('red-button', () => 0);
+    round.keepEveryoneWhoLived();
+    round.start(0, [
+      { id: 'a', name: 'Аня' },
+      { id: 'b', name: 'Боря' },
+    ]);
+    round.input('a', { choice: 1 }, 100);
+    round.input('b', { choice: 1 }, 400);
+
+    const done = round.snapshot(400);
+    expect(done.status).toBe('result');
+    if (done.status !== 'result') return;
+    expect(done.sentToHh).toEqual([]);
+    expect(done.line.id).toBe('round.survived');
   });
 });

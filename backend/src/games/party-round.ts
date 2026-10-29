@@ -8,6 +8,7 @@ import {
   SentPlayer,
 } from './activity';
 import { gameCard } from './catalog';
+import { loadQuizQuestions, QuizQuestion } from './questions';
 import { RoomError } from '../rooms/room.model';
 
 const BALANCE_MS = 15_000;
@@ -19,7 +20,9 @@ const NARROW_HALF = GREEN_HALF / 2;
 const BAND_HALF = 9;
 const WIDE_BAND = 16;
 const HEAVY_WEIGHT = 1.8;
-const ALERT_REVEAL_MS = 4_000;
+export const ALERT_LENGTH = 8;
+const ALERT_STEP_MS = 1_000;
+const ALERT_REVEAL_MS = ALERT_LENGTH * ALERT_STEP_MS;
 const FAIL_ANGLE = 46;
 const SCORE_ANGLE = 22;
 const SCORE_PER_SEC = 10;
@@ -84,6 +87,11 @@ export class PartyRound {
   private wide = new Set<string>();
   private seals = new Map<string, number>();
   private lies = new Map<string, string[]>();
+  private bank: QuizQuestion[] = [];
+  private quizPrompt = '';
+  private quizOptions: string[] = [];
+  private quizCorrect = 0;
+  private quizLies = new Map<string, string[]>();
   private taps = new Map<string, number>();
   private picks = new Map<string, TimedAnswer>();
   private sequences = new Map<string, { icons: string[]; at: number }>();
@@ -92,9 +100,10 @@ export class PartyRound {
   private shown: string[] = [];
   private revealUntil = 0;
   private sequenceHidden = false;
+  private keepSurvivors = false;
 
   private constructor(
-    readonly gameId: Exclude<GameId, 'code-review'>,
+    readonly gameId: GameId,
     readonly title: string,
     private readonly blurb: string,
     briefing: string,
@@ -106,19 +115,29 @@ export class PartyRound {
   static briefing(
     gameId: string,
     random: () => number = Math.random,
+    bank?: QuizQuestion[],
   ): PartyRound {
     const card = gameCard(gameId);
     if (!card) throw new RoomError('Такой мини-игры нет');
-    if (!card.ready || card.id === 'code-review') {
+    if (!card.ready) {
       throw new RoomError('Вопросы для этого раунда ещё готовятся');
     }
-    return new PartyRound(
+    const round = new PartyRound(
       card.id,
       card.title,
       card.blurb,
       card.briefing,
       random,
     );
+    if (card.id === 'code-review') {
+      round.bank = bank ?? loadQuizQuestions();
+      if (round.bank.length === 0) throw new RoomError('В файле нет вопросов');
+    }
+    return round;
+  }
+
+  keepEveryoneWhoLived(): void {
+    this.keepSurvivors = true;
   }
 
   start(now: number, players: RoundPlayer[], ghosts: RoundPlayer[] = []): void {
@@ -165,8 +184,9 @@ export class PartyRound {
     if (this.gameId === 'red-button') {
       this.deadly = Math.floor(this.random() * RED_OPTIONS.length);
     }
+    if (this.gameId === 'code-review') this.dealQuiz();
     if (this.gameId === 'alert-repeat') {
-      this.shown = Array.from({ length: 4 }, () => {
+      this.shown = Array.from({ length: ALERT_LENGTH }, () => {
         const index = Math.floor(this.random() * ALERT_ICONS.length);
         return ALERT_ICONS[index] ?? ALERT_ICONS[0];
       });
@@ -205,6 +225,7 @@ export class PartyRound {
       const elapsed = now - this.startedAt;
       const position = (elapsed % FRIDAY_PERIOD_MS) / FRIDAY_PERIOD_MS;
       this.taps.set(playerId, position);
+      this.closeIfReady();
       return true;
     }
     if (this.gameId === 'night-pager') {
@@ -219,6 +240,7 @@ export class PartyRound {
         throw new RoomError('Минута от 0 до 100');
       }
       this.picks.set(playerId, { value: choice, at: now });
+      this.closeIfReady();
       return true;
     }
     if (this.gameId === 'red-button') {
@@ -236,6 +258,22 @@ export class PartyRound {
         throw new RoomError('Эту кнопку заклеили');
       }
       this.picks.set(playerId, { value: choice, at: now });
+      this.closeIfReady();
+      return true;
+    }
+    if (this.gameId === 'code-review') {
+      if (this.picks.has(playerId)) return false;
+      const choice = input.choice;
+      if (
+        !Number.isInteger(choice) ||
+        choice === undefined ||
+        choice < 0 ||
+        choice >= this.quizOptions.length
+      ) {
+        throw new RoomError('Такого ответа нет');
+      }
+      this.picks.set(playerId, { value: choice, at: now });
+      this.closeIfReady();
       return true;
     }
     if (this.sequences.has(playerId)) return false;
@@ -245,7 +283,19 @@ export class PartyRound {
       throw new RoomError('Нужно повторить четыре алерта');
     }
     this.sequences.set(playerId, { icons: sequence, at: now });
+    this.closeIfReady();
     return true;
+  }
+
+  private closeIfReady(): void {
+    if (this.phase !== 'play' || this.gameId === 'server-balance') return;
+    const ready =
+      this.gameId === 'friday-release'
+        ? this.players.every((player) => this.taps.has(player.id))
+        : this.gameId === 'alert-repeat'
+          ? this.players.every((player) => this.sequences.has(player.id))
+          : this.players.every((player) => this.picks.has(player.id));
+    if (ready) this.finishChoice();
   }
 
   tick(now: number): boolean {
@@ -350,6 +400,20 @@ export class PartyRound {
         haunts: this.haunts,
       };
     }
+    if (this.gameId === 'code-review') {
+      return {
+        status: 'play',
+        gameId: 'code-review',
+        title: this.title,
+        line: this.line,
+        serverNow: now,
+        endsAt: this.endsAt,
+        prompt: this.quizPrompt,
+        options: (viewerId && this.quizLies.get(viewerId)) || this.quizOptions,
+        locked: [...this.picks.keys()],
+        haunts: this.haunts,
+      };
+    }
     return {
       status: 'play',
       gameId: 'alert-repeat',
@@ -409,7 +473,7 @@ export class PartyRound {
       targetId: target.id,
       targetName: target.name,
       kind,
-      text: hauntText(kind, ghost.name, target.name),
+      text: hauntText(kind, ghost.name, target.name, this.gameId),
     });
   }
 
@@ -435,6 +499,14 @@ export class PartyRound {
       );
       const picked = safe[Math.floor(this.random() * safe.length)] ?? 0;
       this.seals.set(target.id, picked);
+      return;
+    }
+    if (this.gameId === 'code-review') {
+      if (this.picks.has(target.id)) throw new RoomError('Этот уже нажал');
+      this.quizLies.set(
+        target.id,
+        swappedQuiz(this.quizOptions, this.quizCorrect),
+      );
       return;
     }
     if (now >= this.revealUntil) throw new RoomError('Алерты уже погасли');
@@ -552,6 +624,31 @@ export class PartyRound {
       );
       return;
     }
+    if (this.gameId === 'code-review') {
+      const judged = this.players.map((player) => ({
+        player,
+        pick: this.picks.get(player.id),
+      }));
+      const failed = judged
+        .filter((item) => !item.pick || item.pick.value !== this.quizCorrect)
+        .map((item) => item.player);
+      if (failed.length === this.players.length) {
+        this.resolve(failed, 'wipe');
+        return;
+      }
+      if (failed.length > 0) {
+        this.resolve(failed, 'failed');
+        return;
+      }
+      const slowest = [...judged].sort(
+        (a, b) => (b.pick?.at ?? 0) - (a.pick?.at ?? 0),
+      );
+      this.resolve(
+        slowest.slice(0, 1).map((item) => item.player),
+        'all-clear',
+      );
+      return;
+    }
     const judged = this.players.map((player) => {
       const answer = this.sequences.get(player.id);
       const correct =
@@ -582,6 +679,16 @@ export class PartyRound {
     players: RoundPlayer[],
     reason: 'all-clear' | 'failed' | 'wipe',
   ): void {
+    if (reason === 'all-clear' && this.keepSurvivors) {
+      this.sentToHh = [];
+      this.pendingSent = [];
+      this.phase = 'result';
+      this.line = {
+        id: 'round.survived',
+        text: 'Наказание пережили все.',
+      };
+      return;
+    }
     this.sentToHh = players.map((player) => ({
       playerId: player.id,
       name: player.name,
@@ -592,10 +699,37 @@ export class PartyRound {
       this.sentToHh.map((player) => player.name),
       reason,
     );
+    if (this.gameId === 'code-review') {
+      const answer = this.quizOptions[this.quizCorrect] ?? '';
+      this.line = {
+        id: this.line.id,
+        text: `${this.line.text} Верный ответ: ${answer}.`,
+      };
+    }
+  }
+
+  private dealQuiz(): void {
+    const index = Math.floor(this.random() * this.bank.length);
+    const question = this.bank[index];
+    if (!question) throw new RoomError('В файле нет вопросов');
+    const options = [question.correct, ...question.wrong];
+    for (let cursor = options.length - 1; cursor > 0; cursor -= 1) {
+      const swap = Math.floor(this.random() * (cursor + 1));
+      const left = options[cursor];
+      const right = options[swap];
+      if (left === undefined || right === undefined) continue;
+      options[cursor] = right;
+      options[swap] = left;
+    }
+    this.quizPrompt = question.prompt;
+    this.quizOptions = options;
+    this.quizCorrect = Math.max(0, options.indexOf(question.correct));
+    this.line = { id: 'code-review.play', text: question.prompt };
   }
 }
 
-function hauntKind(gameId: Exclude<GameId, 'code-review'>): HauntKind {
+function hauntKind(gameId: GameId): HauntKind {
+  if (gameId === 'code-review') return 'swap';
   if (gameId === 'server-balance') return 'weight';
   if (gameId === 'friday-release') return 'window';
   if (gameId === 'night-pager') return 'band';
@@ -607,6 +741,7 @@ function hauntText(
   kind: HauntKind,
   ghostName: string,
   targetName: string,
+  gameId: GameId,
 ): string {
   if (kind === 'weight') {
     return `${ghostName} вешает гирю. Досталось ${targetName}.`;
@@ -620,7 +755,20 @@ function hauntText(
   if (kind === 'seal') {
     return `${ghostName} заклеивает кнопку. Досталось ${targetName}.`;
   }
+  if (gameId === 'code-review') {
+    return `${ghostName} подменяет вариант на телефоне. Досталось ${targetName}.`;
+  }
   return `${ghostName} подменяет алерт на телефоне. Досталось ${targetName}.`;
+}
+
+function swappedQuiz(options: string[], correct: number): string[] {
+  const lied = options.slice();
+  const other = correct === 0 ? 1 : 0;
+  const correctText = lied[correct] ?? '';
+  const otherText = lied[other] ?? '';
+  lied[correct] = otherText;
+  lied[other] = correctText;
+  return lied;
 }
 
 function rollWinds(random: () => number): number[] {
@@ -674,7 +822,7 @@ function sameSequenceShape(
 ): sequence is string[] {
   return (
     Array.isArray(sequence) &&
-    sequence.length === 4 &&
+    sequence.length === ALERT_LENGTH &&
     sequence.every((item) => ALERT_ICONS.includes(item))
   );
 }

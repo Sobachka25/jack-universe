@@ -41,7 +41,7 @@ export const GAME_MENU: GameMenuCard[] = [
   {
     id: 'code-review',
     title: 'Код-ревью',
-    blurb: 'Вопросы ещё собирают. Запустить пока нельзя.',
-    ready: false,
+    blurb: 'Четыре ответа. Один верный. Мимо — на hh.',
+    ready: true,
   },
 ]

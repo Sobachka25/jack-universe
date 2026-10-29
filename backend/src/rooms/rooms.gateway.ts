@@ -196,6 +196,42 @@ export class RoomsGateway
     });
   }
 
+  @SubscribeMessage('room:pause')
+  pause(@ConnectedSocket() client: Socket) {
+    return this.guard(() => {
+      const snapshot = this.rooms.togglePause(client.id);
+      this.publish(snapshot.code);
+      return { ok: true as const, snapshot };
+    });
+  }
+
+  @SubscribeMessage('room:restart')
+  restart(@ConnectedSocket() client: Socket) {
+    return this.guard(() => {
+      const snapshot = this.rooms.restartSession(client.id);
+      this.publish(snapshot.code);
+      return { ok: true as const, snapshot };
+    });
+  }
+
+  @SubscribeMessage('room:fresh')
+  async fresh(@ConnectedSocket() client: Socket) {
+    return this.guard(async () => {
+      const started = this.rooms.freshStart(client.id);
+      if (started.closedCode) this.closeRoom(started.closedCode, client.id);
+      await this.leavePrevious(client, started.closedCode, started.created.code);
+      await client.join(started.created.code);
+      this.publish(started.created.code);
+      return {
+        ok: true as const,
+        role: 'screen' as const,
+        code: started.created.code,
+        screenToken: started.created.screenToken,
+        snapshot: started.created.snapshot,
+      };
+    });
+  }
+
   @SubscribeMessage('room:arm')
   armGame(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
     return this.guard(() => {
@@ -290,6 +326,16 @@ export class RoomsGateway
     if (!previousCode || previousCode === nextCode) return;
     await client.leave(previousCode);
     this.publish(previousCode);
+  }
+
+  private closeRoom(code: string, exceptSocketId: string): void {
+    const members = this.server.sockets.adapter.rooms.get(code);
+    if (!members) return;
+    for (const socketId of members) {
+      if (socketId === exceptSocketId) continue;
+      void this.server.sockets.sockets.get(socketId)?.leave(code);
+      this.server.to(socketId).emit('room:closed', { code });
+    }
   }
 
   private displace(

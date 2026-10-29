@@ -94,6 +94,17 @@ export interface RedButtonPlay extends ActivityBase {
   haunts: HauntView[];
 }
 
+export interface CodeReviewPlay extends ActivityBase {
+  status: 'play';
+  gameId: 'code-review';
+  serverNow: number;
+  endsAt: number;
+  prompt: string;
+  options: string[];
+  locked: string[];
+  haunts: HauntView[];
+}
+
 export interface AlertPlay extends ActivityBase {
   status: 'play';
   gameId: 'alert-repeat';
@@ -112,6 +123,11 @@ export interface ResultActivity extends ActivityBase {
 }
 
 export type PlayActivity =
-  ServerBalancePlay | FridayPlay | PagerPlay | RedButtonPlay | AlertPlay;
+  | ServerBalancePlay
+  | FridayPlay
+  | PagerPlay
+  | RedButtonPlay
+  | CodeReviewPlay
+  | AlertPlay;
 
 export type ActivitySnapshot = BriefingActivity | PlayActivity | ResultActivity;

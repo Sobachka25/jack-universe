@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Shell } from '../components/Shell'
+import { PauseMenu } from '../components/PauseMenu'
+import { primeRoomMusic, setRoomMusic } from '../roomMusic'
 import { saveScreen } from '../session'
 import { emitAck } from '../socket'
 import type { RoomSnapshot } from '../types'
@@ -16,8 +18,32 @@ export function Home() {
   const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    setRoomMusic('lobby', menuOpen)
+    function unlock() {
+      setRoomMusic('lobby', menuOpen)
+    }
+    window.addEventListener('pointerdown', unlock)
+    return () => window.removeEventListener('pointerdown', unlock)
+  }, [menuOpen])
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.repeat) return
+      event.preventDefault()
+      setMenuOpen((open) => !open)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      setRoomMusic('off', false)
+    }
+  }, [])
 
   async function createRoom() {
+    primeRoomMusic()
     setBusy(true)
     setError('')
     try {
@@ -45,8 +71,8 @@ export function Home() {
           пульты в кармане.
         </h1>
         <p className="lede">
-          Телевизор держит комнату. Телефоны заходят по короткому коду. Сотня
-          человек в одном лобби — мини-игры подключим следом, на эту же сцену.
+          Телевизор ведёт вечер. Телефоны отвечают. Николай сам читает вопросы и
+          сам отправляет промахнувшихся на наказание.
         </p>
         <div className="actions">
           <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void createRoom()}>
@@ -60,6 +86,7 @@ export function Home() {
           </Link>
         </div>
         {error ? <p className="banner">{error}</p> : null}
+        {menuOpen ? <PauseMenu onClose={() => setMenuOpen(false)} /> : null}
       </section>
     </Shell>
   )

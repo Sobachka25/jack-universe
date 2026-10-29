@@ -11,6 +11,14 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      '/voice-lines': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/lan': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
     },
   },
 })

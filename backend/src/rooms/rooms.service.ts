@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { Injectable } from '@nestjs/common';
+import { PartyNight } from '../games/party-night';
 import { GameInput, PartyRound } from '../games/party-round';
 import {
   EMPTY_ROOM_TTL_MS,
@@ -70,6 +71,7 @@ export class RoomsService {
 
   private readonly rooms = new Map<string, Room>();
   private readonly rounds = new Map<string, PartyRound>();
+  private readonly nights = new Map<string, PartyNight>();
   private readonly sockets = new Map<string, Membership>();
   private readonly playerTokens = new Map<string, PlayerLink>();
   private readonly emptySince = new Map<string, number>();
@@ -153,6 +155,9 @@ export class RoomsService {
       }
     }
 
+    if (this.nights.has(code)) {
+      throw new RoomError('Вечер уже идёт');
+    }
     if (room.players.size >= room.maxPlayers) {
       throw new RoomError(
         `В комнате уже ${room.maxPlayers} ${personWord(room.maxPlayers)}`,
@@ -243,6 +248,7 @@ export class RoomsService {
 
   selectGame(socketId: string, gameId: string): RoomSnapshot {
     const room = this.requireScreenRoom(socketId);
+    if (this.nights.has(room.code)) throw new RoomError('Вечер уже идёт');
     const current = this.rounds.get(room.code);
     if (current?.snapshot(Date.now()).status === 'play') {
       throw new RoomError('Сначала закройте текущий раунд');
@@ -254,15 +260,60 @@ export class RoomsService {
 
   startGame(socketId: string): RoomSnapshot {
     const room = this.requireScreenRoom(socketId);
-    const round = this.rounds.get(room.code);
-    if (!round) throw new RoomError('Сначала выберите мини-игру');
-    const { living, ghosts } = this.rosters(room, false);
-    round.start(Date.now(), living, ghosts);
+    if (this.nights.has(room.code)) throw new RoomError('Вечер уже идёт');
+    const seated = [...room.players.values()].filter(
+      (player) => player.connected,
+    );
+    if (seated.length < 2) {
+      throw new RoomError('Нужны хотя бы двое с телефонов');
+    }
+    for (const player of room.players.values()) {
+      player.onHh = false;
+      player.pinnedHh = false;
+    }
+    this.rounds.delete(room.code);
+    this.nights.set(
+      room.code,
+      PartyNight.begin(
+        seated.map((player) => ({ id: player.id, name: player.name })),
+      ),
+    );
+    room.phase = 'live';
     return this.toSnapshot(room);
+  }
+
+  togglePause(socketId: string): RoomSnapshot {
+    const room = this.requireScreenRoom(socketId);
+    const night = this.nights.get(room.code);
+    if (!night) throw new RoomError('Сначала нажмите старт');
+    night.togglePause(Date.now());
+    return this.toSnapshot(room);
+  }
+
+  restartSession(socketId: string): RoomSnapshot {
+    const room = this.requireScreenRoom(socketId);
+    this.nights.delete(room.code);
+    this.rounds.delete(room.code);
+    for (const player of room.players.values()) {
+      player.onHh = false;
+      player.pinnedHh = false;
+    }
+    room.phase = 'lobby';
+    return this.toSnapshot(room);
+  }
+
+  freshStart(socketId: string): {
+    created: ScreenSession;
+    closedCode: string | null;
+  } {
+    const closedCode = this.takeSocket(socketId);
+    if (closedCode) this.deleteRoom(closedCode);
+    return { created: this.createRoom(socketId), closedCode };
   }
 
   armGame(socketId: string, gameId: string): RoomSnapshot {
     const room = this.requireScreenRoom(socketId);
+    if (this.nights.has(room.code)) throw new RoomError('Вечер уже идёт');
     const round = PartyRound.briefing(gameId);
     const { living, ghosts } = this.rosters(room, true);
     round.start(Date.now(), living, ghosts);
@@ -283,6 +334,7 @@ export class RoomsService {
 
   replayGame(socketId: string): RoomSnapshot {
     const room = this.requireScreenRoom(socketId);
+    if (this.nights.has(room.code)) throw new RoomError('Вечер уже идёт');
     const round = this.rounds.get(room.code);
     if (!round) throw new RoomError('Сначала выберите мини-игру');
     return this.armGame(socketId, round.snapshot(Date.now()).gameId);
@@ -300,8 +352,15 @@ export class RoomsService {
       throw new RoomError('Играют с телефона');
     }
     const room = this.rooms.get(membership.code);
-    const round = room ? this.rounds.get(room.code) : undefined;
-    if (!room || !round) throw new RoomError('Раунд ещё не идёт');
+    if (!room) throw new RoomError('Раунд ещё не идёт');
+    const night = this.nights.get(room.code);
+    if (night) {
+      const changed = night.input(membership.playerId, input, Date.now());
+      this.syncNight(room);
+      return changed ? room.code : null;
+    }
+    const round = this.rounds.get(room.code);
+    if (!round) throw new RoomError('Раунд ещё не идёт');
     const changed = round.input(membership.playerId, input, Date.now());
     this.applySent(room);
     return changed ? room.code : null;
@@ -309,6 +368,13 @@ export class RoomsService {
 
   tick(now = Date.now()): string[] {
     const dirty: string[] = [];
+    for (const [code, night] of this.nights) {
+      if (!night.tick(now)) continue;
+      const room = this.rooms.get(code);
+      if (!room) continue;
+      this.syncNight(room);
+      dirty.push(code);
+    }
     for (const [code, round] of this.rounds) {
       if (!round.tick(now)) continue;
       const room = this.rooms.get(code);
@@ -457,6 +523,7 @@ export class RoomsService {
     if (room.screenSocketId) this.sockets.delete(room.screenSocketId);
     this.rooms.delete(code);
     this.rounds.delete(code);
+    this.nights.delete(code);
     this.emptySince.delete(code);
   }
 
@@ -485,6 +552,16 @@ export class RoomsService {
     return membership.playerId ?? null;
   }
 
+  private syncNight(room: Room): void {
+    const night = this.nights.get(room.code);
+    if (!night) return;
+    const ghosts = new Set(night.ghostIds());
+    for (const player of room.players.values()) {
+      player.onHh = ghosts.has(player.id);
+      if (!player.onHh) player.pinnedHh = false;
+    }
+  }
+
   private applySent(room: Room): void {
     const round = this.rounds.get(room.code);
     if (!round) return;
@@ -495,6 +572,8 @@ export class RoomsService {
   }
 
   private toSnapshot(room: Room, viewerId: string | null = null): RoomSnapshot {
+    const night = this.nights.get(room.code);
+    if (night) this.syncNight(room);
     return {
       code: room.code,
       phase: room.phase,
@@ -506,8 +585,10 @@ export class RoomsService {
         onHh: player.onHh,
       })),
       screenConnected: Boolean(room.screenSocketId),
-      activity:
-        this.rounds.get(room.code)?.snapshot(Date.now(), viewerId) ?? null,
+      show: night ? night.snapshot(Date.now(), viewerId) : null,
+      activity: night
+        ? null
+        : (this.rounds.get(room.code)?.snapshot(Date.now(), viewerId) ?? null),
     };
   }
 }

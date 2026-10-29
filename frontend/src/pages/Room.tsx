@@ -1,5 +1,11 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { JoinQr } from '../components/JoinQr'
+import { PauseMenu } from '../components/PauseMenu'
+import { PlayerAvatar } from '../components/PlayerAvatar'
+import { PlayerShelf } from '../components/PlayerShelf'
+import { setRoomMusic, type MusicScene } from '../roomMusic'
+import { ShowPhone, ShowScreen } from '../components/ShowStage'
 import { Shell } from '../components/Shell'
 import {
   clearPlayer,
@@ -8,10 +14,19 @@ import {
   loadPlayer,
   loadScreen,
   savePlayer,
+  saveScreen,
 } from '../session'
 import { emitAck, socket } from '../socket'
-import { GameMenu, PartyPhone, PartyScreen } from '../components/PartyStage'
-import type { GameId, GameInput, PublicPlayer, RoomRole, RoomSnapshot } from '../types'
+import type { GameInput, RoomRole, RoomSnapshot } from '../types'
+
+function presentRoom(next: RoomSnapshot): RoomSnapshot {
+  if (next.phase !== 'lobby' || next.show) return next
+  if (next.players.every((player) => !player.onHh)) return next
+  return {
+    ...next,
+    players: next.players.map((player) => ({ ...player, onHh: false })),
+  }
+}
 
 type AttachResult = { role: 'screen'; snapshot: RoomSnapshot }
 type PlayerResult = {
@@ -24,6 +39,7 @@ type PlayerResult = {
 
 export function Room() {
   const params = useParams()
+  const navigate = useNavigate()
   const code = (params.code ?? '').toUpperCase()
   const [role, setRole] = useState<RoomRole>('guest')
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null)
@@ -52,7 +68,7 @@ export function Room() {
           if (cancelled) return
           if (response.ok) {
             setRole('screen')
-            setSnapshot(response.snapshot)
+            setSnapshot(presentRoom(response.snapshot))
             return
           }
           clearScreen(code)
@@ -74,7 +90,7 @@ export function Room() {
             setRole('player')
             setPlayerName(response.name)
             setPlayerId(response.playerId)
-            setSnapshot(response.snapshot)
+            setSnapshot(presentRoom(response.snapshot))
             return
           }
           clearPlayer(code)
@@ -101,7 +117,7 @@ export function Room() {
           setRole('player')
           setPlayerName(response.name)
           setPlayerId(response.playerId)
-          setSnapshot(response.snapshot)
+          setSnapshot(presentRoom(response.snapshot))
           return
         }
 
@@ -118,7 +134,7 @@ export function Room() {
 
     const onState = (next: RoomSnapshot) => {
       if (next.code !== code) return
-      setSnapshot(next)
+      setSnapshot(presentRoom(next))
       setError('')
     }
     const onDisplaced = (payload: { message?: string }) => {
@@ -151,10 +167,38 @@ export function Room() {
     setError('')
     try {
       const response = await emitAck<{ snapshot: RoomSnapshot }>(event, payload)
-      if (!response.ok) setError(response.message)
-      else setSnapshot(response.snapshot)
+      if (!response.ok) {
+        setError(response.message)
+        return false
+      }
+      setSnapshot(presentRoom(response.snapshot))
+      return true
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось обновить комнату')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function startFresh() {
+    setBusy(true)
+    setError('')
+    try {
+      const response = await emitAck<{
+        role: 'screen'
+        code: string
+        screenToken: string
+        snapshot: RoomSnapshot
+      }>('room:fresh')
+      if (!response.ok) {
+        setError(response.message)
+        return
+      }
+      saveScreen(response.code, response.screenToken)
+      navigate(`/room/${response.code}`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось открыть новую комнату')
     } finally {
       setBusy(false)
     }
@@ -168,19 +212,6 @@ export function Room() {
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : 'Не удалось нажать кнопку')
       })
-  }
-
-  async function kick(playerId: string) {
-    setError('')
-    try {
-      const response = await emitAck<{ snapshot: RoomSnapshot }>('room:kick', {
-        playerId,
-      })
-      if (!response.ok) setError(response.message)
-      else setSnapshot(response.snapshot)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось убрать игрока')
-    }
   }
 
   async function joinFromHere(event: FormEvent) {
@@ -201,7 +232,7 @@ export function Room() {
       setRole('player')
       setPlayerName(response.name)
       setPlayerId(response.playerId)
-      setSnapshot(response.snapshot)
+      setSnapshot(presentRoom(response.snapshot))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось войти')
     } finally {
@@ -209,10 +240,8 @@ export function Room() {
     }
   }
 
-  const joinUrl = `${window.location.origin}/join/${code}`
-
   return (
-    <Shell>
+    <Shell home={role !== 'screen'}>
       {closed ? (
         <section className="panel narrow">
           <p className="eyebrow">Комната {code}</p>
@@ -229,13 +258,12 @@ export function Room() {
       ) : role === 'screen' && snapshot ? (
         <ScreenView
           snapshot={snapshot}
-          joinUrl={joinUrl}
           busy={busy}
           error={error}
-          onPick={(gameId) => void runRoom('room:select-game', { gameId })}
           onStart={() => void runRoom('room:start-game')}
-          onStop={() => void runRoom('room:stop-game')}
-          onKick={(playerIdToKick) => void kick(playerIdToKick)}
+          onPause={() => void runRoom('room:pause')}
+          onRestart={() => runRoom('room:restart')}
+          onFresh={() => startFresh()}
         />
       ) : role === 'player' && snapshot ? (
         <PlayerView
@@ -273,63 +301,162 @@ export function Room() {
 
 function ScreenView({
   snapshot,
-  joinUrl,
   busy,
   error,
-  onPick,
   onStart,
-  onStop,
-  onKick,
+  onPause,
+  onRestart,
+  onFresh,
 }: {
   snapshot: RoomSnapshot
-  joinUrl: string
   busy: boolean
   error: string
-  onPick: (gameId: GameId) => void
   onStart: () => void
-  onStop: () => void
-  onKick: (playerId: string) => void
+  onPause: () => void
+  onRestart: () => Promise<boolean>
+  onFresh: () => Promise<void>
 }) {
   const online = snapshot.players.filter((player) => player.connected).length
-  const localhost = window.location.hostname === 'localhost'
+  const show = snapshot.show
+  const [menuOpen, setMenuOpen] = useState(false)
+  const askedPause = useRef(false)
+  const kind = show?.stage.kind
+  const scene: MusicScene =
+    kind === 'done'
+      ? 'credits'
+      : kind === 'finale' || kind === 'finale-step'
+        ? 'finale'
+        : kind === 'trivia'
+          ? 'question'
+          : 'lobby'
+
+  useEffect(() => {
+    setRoomMusic(scene, menuOpen)
+    function unlock() {
+      setRoomMusic(scene, menuOpen)
+    }
+    window.addEventListener('pointerdown', unlock)
+    return () => window.removeEventListener('pointerdown', unlock)
+  }, [scene, menuOpen])
+
+  useEffect(() => () => setRoomMusic('off', false), [])
+
+  const openMenu = useCallback(() => {
+    setMenuOpen(true)
+    if (show && !show.paused) {
+      askedPause.current = true
+      onPause()
+    }
+  }, [show, onPause])
+
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false)
+    const resume = Boolean(show?.paused) || askedPause.current
+    askedPause.current = false
+    if (show && resume) onPause()
+  }, [show, onPause])
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.repeat) return
+      event.preventDefault()
+      if (menuOpen) closeMenu()
+      else openMenu()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menuOpen, openMenu, closeMenu])
+
+  async function restart() {
+    const ok = await onRestart()
+    if (!ok) return
+    askedPause.current = false
+    setMenuOpen(false)
+  }
 
   return (
     <section className="room">
-      <div className="room-head">
-        <div>
-          <p className="eyebrow">Комната</p>
-          <CodeTiles code={snapshot.code} compact />
-        </div>
-        <p className="count">
-          {online} на связи · {snapshot.players.length} / {snapshot.maxPlayers}
-        </p>
-      </div>
-      {error ? <p className="banner">{error}</p> : null}
-      {snapshot.activity ? (
-        <PartyScreen
-          activity={snapshot.activity}
-          busy={busy}
-          onStart={onStart}
-          onStop={onStop}
-        />
-      ) : (
-        <GameMenu busy={busy} onPick={onPick} />
-      )}
-      <details className="room-more">
-        <summary>Код и игроки</summary>
-        <label className="join-link">
-          Адрес для телефонов
-          <input readOnly value={joinUrl} onFocus={(event) => event.target.select()} />
-        </label>
-        {localhost ? (
-          <p className="hint">
-            Телефоны не откроют localhost. Зайди на этот сайт по сетевому адресу,
-            который Vite пишет как Network.
-          </p>
-        ) : null}
-        <PlayerRoster players={snapshot.players} onKick={onKick} />
-      </details>
+      <Field>
+        {error ? <p className="banner field-banner">{error}</p> : null}
+          {show ? (
+            <ShowScreen show={show} hold={menuOpen} />
+          ) : (
+            <div className={menuOpen ? 'lobby held' : 'lobby'}>
+              <div className="lobby-code">
+                <p className="eyebrow">Комната</p>
+                <CodeTiles code={snapshot.code} compact />
+              </div>
+              <p className="count lobby-count">
+                {online} на связи · {snapshot.players.length} / {snapshot.maxPlayers}
+              </p>
+              <JoinQr code={snapshot.code} />
+              <p className="lede lobby-hint">
+                Наведите камеру. Откроется вход, код уже стоит. Останется имя.
+              </p>
+              {online < 2 ? (
+                <p className="lede lobby-need">Нужны хотя бы двое с телефонов.</p>
+              ) : null}
+              <button
+                className="btn btn-primary start-night lobby-start"
+                type="button"
+                disabled={busy || online < 2}
+                onClick={onStart}
+              >
+                Старт
+              </button>
+              <PlayerShelf code={snapshot.code} players={snapshot.players} />
+            </div>
+          )}
+          {show?.stage.kind === 'done' ? (
+            <div className="credits-actions">
+              <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void restart()}>
+                Реванш
+              </button>
+              <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => void onFresh()}>
+                С начала
+              </button>
+            </div>
+          ) : null}
+          {menuOpen ? <PauseMenu onClose={closeMenu} onRestart={() => void restart()} /> : null}
+      </Field>
     </section>
+  )
+}
+
+function Field({ children }: { children: ReactNode }) {
+  const fitRef = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState({ width: 0, height: 0 })
+
+  useEffect(() => {
+    const fit = fitRef.current
+    if (!fit) return
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width ?? 0
+      const height = entry?.contentRect.height ?? 0
+      if (width <= 0 || height <= 0) return
+      const next =
+        width / height > 16 / 9
+          ? { width: height * (16 / 9), height }
+          : { width, height: width * (9 / 16) }
+      setSize((current) =>
+        Math.abs(current.width - next.width) < 0.5 && Math.abs(current.height - next.height) < 0.5
+          ? current
+          : next,
+      )
+    })
+    observer.observe(fit)
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div className="field-fit" ref={fitRef}>
+      <div
+        className="field"
+        style={size.width > 0 ? { width: size.width, height: size.height } : undefined}
+      >
+        {children}
+      </div>
+    </div>
   )
 }
 
@@ -346,22 +473,11 @@ function PlayerView({
   error: string
   onInput: (input: GameInput) => void
 }) {
-  const onHh = snapshot.players.some((player) => player.id === playerId && player.onHh)
-  const targets = snapshot.players
-    .filter((player) => player.connected && !player.onHh)
-    .map((player) => ({ id: player.id, name: player.name }))
-
-  if (snapshot.activity) {
+  if (snapshot.show) {
     return (
       <>
         {error ? <p className="banner">{error}</p> : null}
-        <PartyPhone
-          activity={snapshot.activity}
-          playerId={playerId}
-          onHh={onHh}
-          targets={targets}
-          onInput={onInput}
-        />
+        <ShowPhone show={snapshot.show} playerId={playerId} onInput={onInput} />
       </>
     )
   }
@@ -369,12 +485,15 @@ function PlayerView({
   return (
     <section className="panel narrow player-card">
       <p className="eyebrow">Комната {snapshot.code}</p>
-      <h1 className="menu-title">{onHh ? `Ты на hh, ${name}` : `Ты в штате, ${name}`}</h1>
-      <p className="lede">
-        {onHh
-          ? 'Мини-игра для тех, кто в штате. Когда Николай запустит раунд, с телефона можно один раз подложить.'
-          : 'Николай на экране выбирает мини-игру. Держи телефон открытым: кнопки появятся здесь.'}
-      </p>
+      <div className="me-avatar">
+        <PlayerAvatar
+          id={playerId}
+          ghost={snapshot.players.some((player) => player.id === playerId && player.onHh)}
+          size={112}
+        />
+      </div>
+      <h1 className="menu-title">{`Ты в штате, ${name}`}</h1>
+      <p className="lede">Николай на экране. Когда нажмут Старт, вопрос придёт сюда.</p>
       {!snapshot.screenConnected ? (
         <p className="banner">Экран комнаты сейчас не подключён.</p>
       ) : null}
@@ -399,28 +518,3 @@ function CodeTiles({ code, compact = false }: { code: string; compact?: boolean 
   )
 }
 
-function PlayerRoster({
-  players,
-  onKick,
-}: {
-  players: PublicPlayer[]
-  onKick: (playerId: string) => void
-}) {
-  if (players.length === 0) {
-    return <p className="empty">Пока никого. Код выше — его вводят на телефонах.</p>
-  }
-
-  return (
-    <ul className="roster">
-      {players.map((player) => (
-        <li key={player.id} className={player.connected ? 'person' : 'person off'}>
-          <span>{player.name}</span>
-          {player.onHh ? <span className="hh-tag">hh</span> : null}
-          <button type="button" className="kick" onClick={() => onKick(player.id)} aria-label={`Убрать ${player.name}`}>
-            убрать
-          </button>
-        </li>
-      ))}
-    </ul>
-  )
-}

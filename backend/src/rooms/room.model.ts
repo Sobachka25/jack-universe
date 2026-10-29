@@ -1,4 +1,5 @@
 import type { ActivitySnapshot } from '../games/activity';
+import type { ShowSnapshot } from '../games/show';
 
 export const MAX_PLAYERS = 100;
 export const EMPTY_ROOM_TTL_MS = 2 * 60 * 1000;
@@ -42,6 +43,7 @@ export interface RoomSnapshot {
   players: PublicPlayer[];
   screenConnected: boolean;
   activity: ActivitySnapshot | null;
+  show: ShowSnapshot | null;
 }
 
 export class RoomError extends Error {
