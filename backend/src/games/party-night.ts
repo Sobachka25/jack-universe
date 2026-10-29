@@ -20,6 +20,7 @@ export const EXIT_AT = 10;
 export const MAX_START_LANE = EXIT_AT - 4;
 
 const TRIVIA_MS = 20_000;
+const FINALE_MS = 10_000;
 const BEAT_MS = 6_000;
 const BRIEF_MS = 15_000;
 const COUNTDOWN_MS = 3_000;
@@ -42,6 +43,7 @@ export interface NightOptions {
   bank?: QuizQuestion[];
   now?: number;
   triviaMs?: number;
+  finaleMs?: number;
   beatMs?: number;
   briefMs?: number;
   countdownMs?: number;
@@ -75,6 +77,7 @@ interface Seat {
 export class PartyNight {
   private readonly random: () => number;
   private readonly triviaMs: number;
+  private readonly finaleMs: number;
   private readonly beatMs: number;
   private readonly briefMs: number;
   private readonly countdownMs: number;
@@ -118,6 +121,7 @@ export class PartyNight {
   private constructor(players: RoundPlayer[], options: NightOptions) {
     this.random = options.random ?? Math.random;
     this.triviaMs = options.triviaMs ?? TRIVIA_MS;
+    this.finaleMs = options.finaleMs ?? options.triviaMs ?? FINALE_MS;
     this.beatMs = options.beatMs ?? BEAT_MS;
     this.briefMs = options.briefMs ?? BRIEF_MS;
     this.countdownMs = options.countdownMs ?? COUNTDOWN_MS;
@@ -455,7 +459,9 @@ export class PartyNight {
     const readMs =
       introMs + (this.audio ? this.voiceMs('questions', this.audio) : 0);
     this.readUntil = readMs > 0 ? now + readMs + READ_PAD_MS : null;
-    this.endsAt = (this.readUntil ?? now) + this.triviaMs;
+    this.endsAt =
+      (this.readUntil ?? now) +
+      (kind === 'finale' ? this.finaleMs : this.triviaMs);
     this.line = {
       id: kind === 'trivia' ? 'night.trivia' : 'night.finale',
       text: question.prompt,
